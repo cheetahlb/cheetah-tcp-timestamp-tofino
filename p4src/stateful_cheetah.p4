@@ -59,24 +59,24 @@ header tcp_h {
     bit<16>  urgent_ptr;
 }
 
-header timestamp_non_syn_h {
-    bit<8> nop1;
-    bit<8> nop2;
-    bit<8>  type;
-    bit<8>  length;
-    bit<32>  tsval;
-    bit<16>  tsecr_cookie;
-    bit<16>  tsecr;
+
+header tcp_nop_h {
+    bit<8>   nop1;
+    bit<8>   nop2;
 }
 
-header timestamp_syn_h {
-    bit<32> mss;
-    bit<16> sack;
-    bit<8>  type;
-    bit<8>  length;
-    bit<32>  tsval;
-    bit<16>  tsecr_cookie;
-    bit<16>  tsecr;
+header tcp_mss_sack_h {
+    bit<32>  mss;
+    bit<16>  sack;
+}
+
+header tcp_timestamp_h{
+    bit<8>   type;
+    bit<8>   length;
+    bit<16>  tsval_msb;
+    bit<16>  tsval_lsb;
+    bit<16>  tsecr_msb;
+    bit<16>  tsecr_lsb;
 }
 
 /*************************************************************************
@@ -94,8 +94,9 @@ struct my_ingress_headers_t {
     ethernet_h          ethernet;
     ipv4_h              ipv4;
     tcp_h               tcp;
-    timestamp_non_syn_h timestamp_non_syn;
-    timestamp_syn_h	timestamp_syn;
+    tcp_nop_h           nop;
+    tcp_mss_sack_h      mss_sack;
+    tcp_timestamp_h     timestamp;
 }
 
     /******  G L O B A L   I N G R E S S   M E T A D A T A  *********/
@@ -116,8 +117,8 @@ parser IngressParser(packet_in        pkt,
     /* Intrinsic */
     out ingress_intrinsic_metadata_t  ig_intr_md)
 {
-    Checksum<bit<16>>(HashAlgorithm_t.CSUM16) ipv4_checksum;
-    Checksum<bit<16>>(HashAlgorithm_t.CSUM16) tcp_checksum;
+    Checksum() ipv4_checksum;
+    Checksum() tcp_checksum;
 
     /* This is a mandatory state, required by Tofino Architecture */
      state start {
@@ -164,32 +165,58 @@ parser IngressParser(packet_in        pkt,
     state parse_tcp {
         pkt.extract(hdr.tcp);
         tcp_checksum.subtract({hdr.tcp.checksum});
-        tcp_checksum.subtract({hdr.tcp.src_port,hdr.tcp.dst_port});
-        meta.checksum = tcp_checksum.get();
+        
         meta.is_fin = (bit<1>)hdr.tcp.flags;
         meta.is_syn = (bit<1>)(hdr.tcp.flags >> 1);
-        transition select(hdr.tcp.data_offset) {
+
+          transition select(hdr.tcp.data_offset) {
             ( 5 )  : parse_first_fragment;
-            ( 8 ) : parse_timestamp_non_syn;
-            ( 10  ) : parse_timestamp_syn;
+            ( 8 ) : parse_nop;
+            ( 10  ) : parse_mss_sack;
             default : accept;
         }
     }
 
-    state parse_timestamp_non_syn{
-        pkt.extract(hdr.timestamp_non_syn);
-        transition parse_first_fragment;
+    state parse_nop{
+        pkt.extract(hdr.nop);
+        //pkt.extract(hdr.timestamp_non_syn);
+        transition parse_timestamp;
     }
     
-    state parse_timestamp_syn{
-        pkt.extract(hdr.timestamp_syn);
-        transition parse_first_fragment;
+    state parse_mss_sack{
+        pkt.extract(hdr.mss_sack);
+        //pkt.extract(hdr.timestamp_syn);
+        transition parse_timestamp;
+    }
+
+    state parse_timestamp{
+        pkt.extract(hdr.timestamp);
+        tcp_checksum.subtract({hdr.timestamp.tsecr_msb, hdr.timestamp.tsecr_lsb,hdr.timestamp.tsval_msb,hdr.timestamp.tsval_lsb});
+        meta.checksum = tcp_checksum.get();
+        //pkt.extract(hdr.timestamp_syn);
+        transition accept;
+        //transition parse_first_fragment;
     }
 
 }
 
     /***************** M A T C H - A C T I O N  *********************/
 
+control calc_ipv4_hash(
+    in bit<32>   ip_one,
+    in bit<16>   tcp_port_one,
+    in bit<16>   tcp_port_two,
+    in bit<8>   ip_protocol,
+    out bit<16>           sel_hash)
+{
+    Hash<bit<16>>(HashAlgorithm_t.CRC16) hash;
+
+    apply {
+        sel_hash = hash.get({ip_one, tcp_port_two, tcp_port_two, ip_protocol});
+    }
+}
+
+/*
 #define IPV4_HASH_FIELDS { \
     hdr.ipv4.src_addr,     \
     hdr.ipv4.dst_addr,     \
@@ -220,7 +247,7 @@ control calc_ipv4_hash_2(
     apply {
         sel_hash = hash.get(IPV4_HASH_FIELDS);
     }
-}
+}*/
 
 control Ingress(
     /* User */
@@ -379,13 +406,13 @@ control Ingress(
 
             if(meta.is_syn == 0){
                 
-                    # extract the cookie from the timestamp
+                    // extract the cookie from the timestamp
                     cookie_32 = ((bit<32>)hdr.timestamp_non_syn.tsecr_cookie);
 
-                    # read the connection hash table
+                    // read the connection hash table
                     stored_hash = conn_table_hash_read_action.execute(cookie_32);
 
-                    # extract the mapping from the connection table
+                    // extract the mapping from the connection table
                      cookie2 = conn_table_read_action.execute(cookie_32);
                     
                     if(meta.is_fin == 0x01){
@@ -393,33 +420,33 @@ control Ingress(
                         cookie_stack = stack_push_write.execute(((bit<32>)cookie_head));
                     }
                 
-                    #send the packet to the server associated with the "decrypted" cookie
-                     select_all_server.apply();
+                    //send the packet to the server associated with the "decrypted" cookie
+                    select_all_server.apply();
                     
                
             }
             else{
-                # extract the table size from the first register
+                // extract the table size from the first register
                 table_size = (bit<16>)table_size_reg_read_action.execute(0);
 
-                # extract the next id the server table where the syn to should sent
+                // extract the next id the server table where the syn to should sent
                 next = (bit<16>)test_reg_action.execute(0);
            
-                # get an unused cookie
+                // get an unused cookie
                 cookie_head_32 = ((bit<32>)stack_head_pop.execute(0));
                 cookie_stack_32 = ((bit<32>)stack_pop_read.execute(cookie_head_32));
 
-                # update the connection hash table
+                // update the connection hash table
                 conn_table_hash_write_action.execute(cookie_stack_32);
 
-                # update the connection table
+                // update the connection table
                 conn_table_write_action.execute(cookie_stack_32);
 
-                # update the fir 16MSBs of the timestamp ecr
+                // update the fir 16MSBs of the timestamp ecr
                 hdr.timestamp_syn.tsecr_cookie = (bit<16>)cookie_stack_32; 
 
-                # map the packet to a server and get the server_id
-                # select_active_server.apply();
+                // map the packet to a server and get the server_id
+                // select_active_server.apply();
 
             }
           } 
@@ -436,12 +463,13 @@ control IngressDeparser(packet_out pkt,
     /* Intrinsic */
     in    ingress_intrinsic_metadata_for_deparser_t  ig_dprsr_md)
 {
-    Checksum<bit<16>>(HashAlgorithm_t.CSUM16) ipv4_checksum;
-    Checksum<bit<16>>(HashAlgorithm_t.CSUM16) tcp_checksum;
+    Checksum() ipv4_checksum;
+    Checksum() tcp_checksum;
     
     apply {
         
-        hdr.ipv4.hdr_checksum = ipv4_checksum.update({
+        if(hdr.ipv4.isValid()){
+            hdr.ipv4.hdr_checksum = ipv4_checksum.update({
                 hdr.ipv4.version,
                 hdr.ipv4.ihl,
                 hdr.ipv4.diffserv,
@@ -454,13 +482,18 @@ control IngressDeparser(packet_out pkt,
                 hdr.ipv4.src_addr,
                 hdr.ipv4.dst_addr
             });
-        hdr.tcp.checksum = tcp_checksum.update({
-                hdr.ipv4.src_addr,
-                hdr.ipv4.dst_addr,
-                hdr.tcp.src_port,
-                hdr.tcp.dst_port,
-                meta.checksum
-        });
+        }
+        if(hdr.tcp.isValid()){
+            hdr.tcp.checksum = tcp_checksum.update({
+                    hdr.ipv4.src_addr,
+                    hdr.ipv4.dst_addr,
+                    hdr.timestamp.tsecr_msb,
+                    hdr.timestamp.tsecr_lsb,
+                    hdr.timestamp.tsval_msb,
+                    hdr.timestamp.tsval_lsb,
+                    meta.checksum
+            });
+        }
         pkt.emit(hdr);
     }
 }

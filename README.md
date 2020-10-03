@@ -26,6 +26,10 @@ The LB implements Weighted Round Robin with 2 buckets, each pointing to a server
 
 If you plan to change these values, you need to modify them in the `bfrt_python` files.
 
+Remember to disable randomized timestamps on the servers:
+
+`sysctl -w net.ipv4.tcp_timestamps=2`
+
 ## Running the code
 
 Move the files of this repository into a folder on the switch:
