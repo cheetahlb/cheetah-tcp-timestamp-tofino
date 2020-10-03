@@ -22,7 +22,7 @@ The client is connected to port 9 (D_P = 60) of the tofino switch.
 
 The current P4 program does not handle ARP requests so ARP should be statically set up on the machines and the MAC addresses should be configured in the `bfrt_python` files.
 
-The LB implements Weighted Round Robin with 3 buckets. The first two buckets map to Server-1 and the last bucket to Server-2.
+The LB implements Weighted Round Robin with 2 buckets, each pointing to a server.
 
 If you plan to change these values, you need to modify them in the `bfrt_python` files.
 
@@ -59,21 +59,19 @@ Ths switch is now running properly.
 
 Go to Server-1 and run the following command:
 
-`iperf3 -s`
+`netcat -l 4444 > received_file_server_1`
 
 Go to Server-2 and run the following command:
 
-`iperf3 -s`
+`netcat -l 4444 > received_file_server_2`
 
 Open three `tcpdump` sessions to spoof traffic at the interfaces of the three machines.
 
 Go to the client and run the following command:
 
-`iperf3 -c 192.168.64.1`
+`netcat -w 1 192.168.64.1 4444 < file.txt`, where `file` is any file you wish to transfer.
 
 This will generate a request towards the `VIP` and will be served by Server-1. Check on `tcpdump`.
-
-Run again the same command at the client. The request will again be served by Server-1. Check on `tcpdump`
 
 Run again the same command at the client. The request will now be served by Server-2. Check on `tcpdump`
 
