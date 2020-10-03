@@ -400,14 +400,24 @@ control Ingress(
     apply {
         if (hdr.ipv4.isValid()) {
           if(hdr.tcp.isValid()){
+            bit<32> ip_1 = hdr.ipv4.dst_addr;
+            bit<16> tcp_1 = hdr.tcp.dst_port;
+            bit<16> tcp_2 = hdr.tcp.src_port;
+            if(hdr.ipv4.dst_addr == vip){
+                ip_1 = hdr.ipv4.src_addr;
+                tcp_1 = hdr.tcp.src_port;
+                tcp_2 = hdr.tcp.dst_port;
+            }
+            calc_ipv4_hash.apply(ip_1,tcp_1,tcp_2,hdr.ipv4.protocol,sel_hash);
 
-            #compute the hash of the 5-tuple
-            calc_ipv4_hash.apply(hdr,meta,sel_hash);
+            //compute the hash of the 5-tuple
+            //calc_ipv4_hash.apply(hdr,meta,sel_hash);
 
-            if(meta.is_syn == 0){
+            if(hdr.ipv4.dst_addr == vip){
+                if(meta.is_syn == 0){
                 
                     // extract the cookie from the timestamp
-                    cookie_32 = ((bit<32>)hdr.timestamp_non_syn.tsecr_cookie);
+                    cookie_32 = ((bit<32>)hdr.timestamp.tsecr_cookie);
 
                     // read the connection hash table
                     stored_hash = conn_table_hash_read_action.execute(cookie_32);
@@ -424,30 +434,33 @@ control Ingress(
                     select_all_server.apply();
                     
                
-            }
-            else{
-                // extract the table size from the first register
-                table_size = (bit<16>)table_size_reg_read_action.execute(0);
+                }
+                else{
+                    // extract the table size from the first register
+                    table_size = (bit<16>)table_size_reg_read_action.execute(0);
 
-                // extract the next id the server table where the syn to should sent
-                next = (bit<16>)test_reg_action.execute(0);
-           
-                // get an unused cookie
-                cookie_head_32 = ((bit<32>)stack_head_pop.execute(0));
-                cookie_stack_32 = ((bit<32>)stack_pop_read.execute(cookie_head_32));
+                    // extract the next id the server table where the syn to should sent
+                    next = (bit<16>)test_reg_action.execute(0);
+               
+                    // get an unused cookie
+                    cookie_head_32 = ((bit<32>)stack_head_pop.execute(0));
+                    cookie_stack_32 = ((bit<32>)stack_pop_read.execute(cookie_head_32));
 
-                // update the connection hash table
-                conn_table_hash_write_action.execute(cookie_stack_32);
+                    // update the connection hash table
+                    conn_table_hash_write_action.execute(cookie_stack_32);
 
-                // update the connection table
-                conn_table_write_action.execute(cookie_stack_32);
+                    // update the connection table
+                    conn_table_write_action.execute(cookie_stack_32);
 
-                // update the fir 16MSBs of the timestamp ecr
-                hdr.timestamp_syn.tsecr_cookie = (bit<16>)cookie_stack_32; 
+                    // update the fir 16MSBs of the timestamp ecr
+                    hdr.timestamp.tsecr_cookie = (bit<16>)cookie_stack_32; 
 
-                // map the packet to a server and get the server_id
-                // select_active_server.apply();
+                    // map the packet to a server and get the server_id
+                    // select_active_server.apply();
 
+                }
+            }else{
+                // packet from the server
             }
           } 
         }
