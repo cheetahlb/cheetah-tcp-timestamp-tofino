@@ -11,9 +11,9 @@ select_active_server = p4.Ingress.select_active_server
 
 # populate the all and active server tables 
 for x in range(0,number_of_servers):
-    select_all_server.add_with_set_server(x,ip_address('10.200.0.'+str(x)),x)
+    select_all_server.add_with_set_server(x,ip_address('192.168.63.'+str(x)),x)
 for x in range(0,number_of_servers):
-    select_active_server.add_with_set_server(x,ip_address('10.200.0.'+str(x)),x)
+    select_active_server.add_with_set_server(x,ip_address('192.168.63.'+str(x)),x)
 
 register_table_size = p4.Ingress.table_size_reg
 register_counter = p4.Ingress.test_reg
