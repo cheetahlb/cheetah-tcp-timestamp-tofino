@@ -292,13 +292,12 @@ control Ingress(
     };
 
     Register<bit<16>, bit<16>>(32w10) cookie_stack_reg;
-    /*RegisterAction<bit<16>, bit<32>, bit<16>>(cookie_stack_reg) stack_push_write = {
+    RegisterAction<bit<16>, bit<32>, bit<16>>(cookie_stack_reg) stack_push_write = {
         void apply(inout bit<16> value, out bit<16> read_value){
             value = hdr.timestamp.tsecr_lsb;
-            #value = cookie_head;
             read_value = value;
         }
-    };*/
+    };
     RegisterAction<bit<16>, bit<16>, bit<16>>(cookie_stack_reg) stack_pop_read = {
         void apply(inout bit<16> value, out bit<16> read_value){
             read_value=value;
@@ -306,12 +305,12 @@ control Ingress(
     };
 
     Register<bit<16>, bit<16>>(32w1) stack_head;
-    /*RegisterAction<bit<16>, bit<32>, bit<16>>(stack_head) stack_head_push= {
+    RegisterAction<bit<16>, bit<32>, bit<16>>(stack_head) stack_head_push= {
         void apply(inout bit<16> value, out bit<16> read_value){
             value = value + 1;
             read_value = value;
         }
-    };*/
+    };
 
     RegisterAction<bit<16>, bit<16>, bit<16>>(stack_head) stack_head_pop = {
         void apply(inout bit<16> value, out bit<16> read_value){
@@ -470,7 +469,7 @@ control Ingress(
                     // extract the "cookie" from the 16 LSBs of the client timestamp (ie, tsecr) 
                     cookie_stack = hdr.timestamp.tsecr_lsb; // 0x0009
 
-                    /* FIN to be realized in coordination with the server
+                    /* FIN to be realized in coordination with the server*/
                     if(meta.is_fin == 0x01){ //currently not supported
                         @stage(4) { 
                             cookie_head = stack_head_push.execute(0);
@@ -478,7 +477,7 @@ control Ingress(
                         @stage(6) { 
                             cookie_stack = stack_push_write.execute(((bit<32>)cookie_head));
                         }
-                    }*/
+                    }
 
                     @stage(8) { 
                         // restore the 16 LSBs of the client timestamp by reading the register at the "cookie" index
