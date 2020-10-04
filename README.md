@@ -83,5 +83,5 @@ This cycle repeats for each request sent by a client.
 
 
 ## Functionalities not yet implemented
-* check whether the has of the incoming packet correspond to the stored one.
+* check whether the hash of the incoming packet correspond to the stored one.
 * handle the FINs from the server.
