@@ -224,7 +224,7 @@ control Ingress(
 {
     /* The template type reflects the total width of the counter pair */
     bit<16> sel_hash;
-    //bit<16> sel_hash_2;
+    bit<16> sel_hash_2;
     //bit<16> cookie; 
     //bit<16> next; 
     bit<16> table_size=0;
@@ -247,10 +247,9 @@ control Ingress(
         }
     };
 
-    /*Register<bit<16>, _>(0xa) conn_table_hash;
+    Register<bit<16>, _>(32w10) conn_table_hash;
     RegisterAction<bit<16>, _, bit<16>>(conn_table_hash) conn_table_hash_write_action = {
         void apply(inout bit<16> value, out bit<16> read_value){
-            //value =  entry.conn_hash ++ entry.conn_timestamp; //(sel_hash ++ hdr.timestamp.tsval_lsb);
             value = sel_hash;
             read_value = value;
             
@@ -260,7 +259,7 @@ control Ingress(
         void apply(inout bit<16> value, out bit<16> read_value){
             read_value = value;
         }
-    };*/
+    };
 
     Register<bit<16>, _>(0xa) conn_table_client_ts;
     RegisterAction<bit<16>, _, bit<16>>(conn_table_client_ts) conn_table_client_ts_write_action = {
@@ -408,6 +407,12 @@ control Ingress(
                         cookie_stack = hdr.timestamp.tsecr_lsb;
                         
                         // TODO: drop if the connection hash is wrong
+                        @stage(7){
+                            sel_hash_2 = conn_table_hash_read_action.execute(cookie_stack);
+                        }
+                        if(sel_hash_2 != sel_hash){
+                            drop();
+                        }else{
 
                         @stage(8) { 
                             // write the 16 LSBs of the client timestamp (ie, tsval.msb) into the client register
@@ -426,6 +431,7 @@ control Ingress(
 
                         //send the packet to the server associated with the cookie
                         select_all_server.apply();
+                    }
 
                     }
                     else{
@@ -446,6 +452,10 @@ control Ingress(
                             cookie_stack = stack_pop_read.execute(cookie_head);
                         }
 
+                        @stage(7){
+                            conn_table_hash_write_action.execute(cookie_stack);
+                        }
+
                         @stage(8) { 
                             // store the 16 LSBs of the client timestamp (ie, tsval) into the register at the "cookie" index
                             conn_table_client_ts_write_action.execute(cookie_stack);   
@@ -453,6 +463,7 @@ control Ingress(
                         @stage(10) {
                             // store the selected server in the register at the "cookie" index
                             conn_table_write_action.execute(cookie_stack);
+                            
                         }
 
                         // sto the cookie into the 16 LSBs of the client timestamp (ie, tsval)

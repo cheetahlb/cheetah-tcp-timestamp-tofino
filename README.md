@@ -82,5 +82,3 @@ Run again the same command at the client. The request will now be served by Serv
 This cycle repeats for each request sent by a client.
 
 
-## Functionalities not yet implemented
-* check whether the hash of the incoming packet correspond to the stored one.
