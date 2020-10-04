@@ -1,5 +1,7 @@
 /* -*- P4_16 -*- */
 
+/* Start from the "apply" function to read the code with comments */
+
 #include <core.p4>
 #include <tna.p4>
 
@@ -82,13 +84,9 @@ header tcp_timestamp_h{
 /*************************************************************************
  **************  I N G R E S S   P R O C E S S I N G   *******************
  *************************************************************************/
- 
+
     /***********************  H E A D E R S  ************************/
 
-struct connection {
-    bit<32> conn_hash;
-    bit<32> conn_server;
-}
 
 struct my_ingress_headers_t {
     ethernet_h          ethernet;
@@ -107,6 +105,7 @@ struct my_ingress_metadata_t {
     bit<16>       checksum;
     bit<1>        is_fin;
     bit<1>        is_syn;
+    bit<32>     timestamp;
 }
 
     /***********************  P A R S E R  **************************/
@@ -121,7 +120,7 @@ parser IngressParser(packet_in        pkt,
     Checksum() tcp_checksum;
 
     /* This is a mandatory state, required by Tofino Architecture */
-     state start {
+    state start {
         pkt.extract(ig_intr_md);
         pkt.advance(PORT_METADATA_SIZE);
         transition meta_init;
@@ -133,7 +132,8 @@ parser IngressParser(packet_in        pkt,
         meta.ipv4_checksum_err = 0;
         meta.checksum = 0;   
         meta.is_fin = 0;   
-        meta.is_syn = 0;   
+        meta.is_syn = 0;  
+        meta.timestamp=0; 
         transition parse_ethernet;
     }
 
@@ -169,7 +169,7 @@ parser IngressParser(packet_in        pkt,
         meta.is_fin = (bit<1>)hdr.tcp.flags;
         meta.is_syn = (bit<1>)(hdr.tcp.flags >> 1);
 
-          transition select(hdr.tcp.data_offset) {
+        transition select(hdr.tcp.data_offset) {
             ( 5 )  : parse_first_fragment;
             ( 8 ) : parse_nop;
             ( 10  ) : parse_mss_sack;
@@ -179,13 +179,11 @@ parser IngressParser(packet_in        pkt,
 
     state parse_nop{
         pkt.extract(hdr.nop);
-        //pkt.extract(hdr.timestamp_non_syn);
         transition parse_timestamp;
     }
     
     state parse_mss_sack{
         pkt.extract(hdr.mss_sack);
-        //pkt.extract(hdr.timestamp_syn);
         transition parse_timestamp;
     }
 
@@ -193,9 +191,7 @@ parser IngressParser(packet_in        pkt,
         pkt.extract(hdr.timestamp);
         tcp_checksum.subtract({hdr.timestamp.tsecr_msb, hdr.timestamp.tsecr_lsb,hdr.timestamp.tsval_msb,hdr.timestamp.tsval_lsb});
         meta.checksum = tcp_checksum.get();
-        //pkt.extract(hdr.timestamp_syn);
         transition accept;
-        //transition parse_first_fragment;
     }
 
 }
@@ -216,39 +212,6 @@ control calc_ipv4_hash(
     }
 }
 
-/*
-#define IPV4_HASH_FIELDS { \
-    hdr.ipv4.src_addr,     \
-    hdr.ipv4.dst_addr,     \
-    hdr.ipv4.protocol,     \
-    hdr.tcp.src_port,      \
-    hdr.tcp.dst_port       \
-}
-
-control calc_ipv4_hash(
-    in my_ingress_headers_t   hdr,
-    in my_ingress_metadata_t  meta,
-    out bit<16>               sel_hash)
-{
-    Hash<bit<16>>(HashAlgorithm_t.CRC16) hash;
-
-    apply {
-        sel_hash = hash.get(IPV4_HASH_FIELDS);
-    }
-}
-
-control calc_ipv4_hash_2(
-    in my_ingress_headers_t   hdr,
-    in my_ingress_metadata_t  meta,
-    out bit<16>               sel_hash)
-{
-    Hash<bit<16>>(HashAlgorithm_t.CRC16) hash;
-
-    apply {
-        sel_hash = hash.get(IPV4_HASH_FIELDS);
-    }
-}*/
-
 control Ingress(
     /* User */
     inout my_ingress_headers_t                       hdr,
@@ -261,70 +224,96 @@ control Ingress(
 {
     /* The template type reflects the total width of the counter pair */
     bit<16> sel_hash;
-    bit<16> sel_hash_2;
-    bit<16> cookie; 
-    bit<32> cookie_32; 
-    bit<16> cookie2; 
-    bit<16> next; 
-    bit<16> table_size;
+    //bit<16> sel_hash_2;
+    //bit<16> cookie; 
+    //bit<16> next; 
+    bit<16> table_size=0;
     bit<16> cookie_stack;
-    bit<32> cookie_stack_32;
     bit<16> cookie_head;
-    bit<32> cookie_head_32;
-    bit<1>  found;
-    bit<16> server_id;
-    bit<16> stored_hash;
-    connection conn;
+    bit<16> server_id =0;
+    //bit<32> temp;
+    bit<32> vip = 0xc0a84001;
 
-    Register<bit<16>, bit<32>>(32w250) conn_table;
-    RegisterAction<bit<16>, bit<32>, bit<16>>(conn_table) conn_table_read_action = {
+    Register<bit<16>, _>(32w10) conn_table;
+    RegisterAction<bit<16>, _, bit<16>>(conn_table) conn_table_read_action = {
         void apply(inout bit<16> value, out bit<16> read_value){
             read_value = value;
         }
     };
-    RegisterAction<bit<16>, bit<32>, bit<16>>(conn_table) conn_table_write_action = {
+    RegisterAction<bit<16>, _, bit<16>>(conn_table) conn_table_write_action = {
         void apply(inout bit<16> value, out bit<16> read_value){
-            value = next;
+            value = server_id;
             read_value=value;
         }
     };
 
-    Register<bit<16>, _>(0x250) conn_table_hash;
+    /*Register<bit<16>, _>(0xa) conn_table_hash;
     RegisterAction<bit<16>, _, bit<16>>(conn_table_hash) conn_table_hash_write_action = {
         void apply(inout bit<16> value, out bit<16> read_value){
-            # value = sel_hash;
-            value = 1;
+            //value =  entry.conn_hash ++ entry.conn_timestamp; //(sel_hash ++ hdr.timestamp.tsval_lsb);
+            value = sel_hash;
+            read_value = value;
+            
         }
     };
     RegisterAction<bit<16>, _, bit<16>>(conn_table_hash) conn_table_hash_read_action = {
         void apply(inout bit<16> value, out bit<16> read_value){
             read_value = value;
         }
-    };
+    };*/
 
-    Register<bit<16>, bit<32>>(32w250) cookie_stack_reg;
-    RegisterAction<bit<16>, bit<32>, bit<16>>(cookie_stack_reg) stack_push_write = {
+    Register<bit<16>, _>(0xa) conn_table_client_ts;
+    RegisterAction<bit<16>, _, bit<16>>(conn_table_client_ts) conn_table_client_ts_write_action = {
         void apply(inout bit<16> value, out bit<16> read_value){
-            value = hdr.timestamp_non_syn.tsecr_cookie;
-            #value = cookie_head;
+            //value = (value & 0xffff0000);
+            value = hdr.timestamp.tsval_lsb;
             read_value = value;
         }
     };
-    RegisterAction<bit<16>, bit<32>, bit<16>>(cookie_stack_reg) stack_pop_read = {
+    RegisterAction<bit<16>, _, bit<16>>(conn_table_client_ts) conn_table_client_ts_read_action = {
+        void apply(inout bit<16> value, out bit<16> read_value){
+            read_value = value;
+            //value = (value & 0xffff0000); 
+        }
+    };
+
+    Register<bit<16>, _>(0xa) conn_table_server_ts;
+    RegisterAction<bit<16>, _, bit<16>>(conn_table_server_ts) conn_table_server_ts_write_action = {
+        void apply(inout bit<16> value, out bit<16> read_value){
+            value = hdr.timestamp.tsval_lsb;
+            read_value = value;
+            
+        }
+    };
+    RegisterAction<bit<16>, _, bit<16>>(conn_table_server_ts) conn_table_server_ts_read_action = {
+        void apply(inout bit<16> value, out bit<16> read_value){
+            read_value = value;
+        }
+    };
+
+    Register<bit<16>, bit<16>>(32w10) cookie_stack_reg;
+    /*RegisterAction<bit<16>, bit<32>, bit<16>>(cookie_stack_reg) stack_push_write = {
+        void apply(inout bit<16> value, out bit<16> read_value){
+            value = hdr.timestamp.tsecr_lsb;
+            #value = cookie_head;
+            read_value = value;
+        }
+    };*/
+    RegisterAction<bit<16>, bit<16>, bit<16>>(cookie_stack_reg) stack_pop_read = {
         void apply(inout bit<16> value, out bit<16> read_value){
             read_value=value;
         }
     };
 
-    Register<bit<16>, bit<32>>(32w1) stack_head;
-    RegisterAction<bit<16>, bit<32>, bit<16>>(stack_head) stack_head_push= {
+    Register<bit<16>, bit<16>>(32w1) stack_head;
+    /*RegisterAction<bit<16>, bit<32>, bit<16>>(stack_head) stack_head_push= {
         void apply(inout bit<16> value, out bit<16> read_value){
             value = value + 1;
             read_value = value;
         }
-    };
+    };*/
 
-    RegisterAction<bit<16>, bit<32>, bit<16>>(stack_head) stack_head_pop = {
+    RegisterAction<bit<16>, bit<16>, bit<16>>(stack_head) stack_head_pop = {
         void apply(inout bit<16> value, out bit<16> read_value){
             read_value = value;
             value = value - 1;
@@ -337,10 +326,6 @@ control Ingress(
             read_value = value;
         }
     };
-
-    action table_size_reg_action(bit<32> idx) {
-        table_size_reg_read_action.execute(idx);
-    }
 
     Register<bit<16>, bit<32>>(32w1) test_reg;
     RegisterAction<bit<16>, bit<32>, bit<16>>(test_reg) test_reg_action = {
@@ -355,30 +340,26 @@ control Ingress(
         }
     };
 
-    action register_action(bit<32> idx) {
-        test_reg_action.execute(idx);
-    }
-
-    action set_server(bit<32> server_dip, bit<16> server_id_param) {
-        ig_tm_md.ucast_egress_port = ig_intr_md.ingress_port;
+    action set_server(bit<32> server_dip, bit<16> server_id_param, bit<9> egress_port, bit<48> dmac) {
+        ig_tm_md.ucast_egress_port = egress_port;
+        hdr.ethernet.dst_addr = dmac;
         hdr.ipv4.dst_addr = server_dip;
         server_id = server_id_param;
-        ig_tm_md.bypass_egress = true;
-    }
-
-    action set_server_2(bit<32> server_dip, bit<16> server_id_param) {
-        ig_tm_md.ucast_egress_port = ig_intr_md.ingress_port;
-        hdr.ipv4.dst_addr = server_dip;
-        server_id = server_id_param;
-        ig_tm_md.bypass_egress = true;
+        ig_tm_md.bypass_egress = (bit<1>)true;
     }
 
     action drop() {
         ig_dprsr_md.drop_ctl = 1;
     }
 
+    action get_server_id(bit<16> server_id_input){
+        server_id = server_id_input;
+        hdr.ipv4.src_addr = 0xc0a84001;
+        ig_tm_md.ucast_egress_port = 60; 
+    }
+
     table select_all_server {
-        key = { cookie2 : exact; }
+        key = { server_id : exact; }
         actions = {
             set_server;
             @defaultonly NoAction;
@@ -387,82 +368,131 @@ control Ingress(
         size = 1 << 8;
     }
 
-    table select_active_server {
-        key = { next : exact; }
+    table get_server_from_ip {
+        key = {
+            hdr.ipv4.src_addr: exact;
+        }
         actions = {
-            set_server_2;
+            get_server_id;
             @defaultonly NoAction;
         }
         const default_action = NoAction();
         size = 1 << 8;
+
     }
 
     apply {
         if (hdr.ipv4.isValid()) {
-          if(hdr.tcp.isValid()){
-            bit<32> ip_1 = hdr.ipv4.dst_addr;
-            bit<16> tcp_1 = hdr.tcp.dst_port;
-            bit<16> tcp_2 = hdr.tcp.src_port;
-            if(hdr.ipv4.dst_addr == vip){
-                ip_1 = hdr.ipv4.src_addr;
-                tcp_1 = hdr.tcp.src_port;
-                tcp_2 = hdr.tcp.dst_port;
-            }
-            calc_ipv4_hash.apply(ip_1,tcp_1,tcp_2,hdr.ipv4.protocol,sel_hash);
+            if(hdr.tcp.isValid()){
+                // prepare the input to the hash function assuming the packets comes from the server
+                bit<32> ip_1 = hdr.ipv4.dst_addr;
+                bit<16> tcp_1 = hdr.tcp.dst_port;
+                bit<16> tcp_2 = hdr.tcp.src_port;
 
-            //compute the hash of the 5-tuple
-            //calc_ipv4_hash.apply(hdr,meta,sel_hash);
+                // if the packet comes from the client we need to swap the connection identifier input
+                if(hdr.ipv4.dst_addr == vip){
+                    ip_1 = hdr.ipv4.src_addr;
+                    tcp_1 = hdr.tcp.src_port;
+                    tcp_2 = hdr.tcp.dst_port;
+                }
+                // compute the hash of the connection identifier. Currently not stored
+                calc_ipv4_hash.apply(ip_1,tcp_1,tcp_2,hdr.ipv4.protocol,sel_hash);
 
-            if(hdr.ipv4.dst_addr == vip){
-                if(meta.is_syn == 0){
-                
-                    // extract the cookie from the timestamp
-                    cookie_32 = ((bit<32>)hdr.timestamp.tsecr_cookie);
+                // check if it is an incoming or outgoing packet
+                if(hdr.ipv4.dst_addr == vip){
+                    //it is an incoming packet from a client
 
-                    // read the connection hash table
-                    stored_hash = conn_table_hash_read_action.execute(cookie_32);
+                    if(meta.is_syn == 0){
+                        //if it is a packet belonging to a connection
 
-                    // extract the mapping from the connection table
-                     cookie2 = conn_table_read_action.execute(cookie_32);
-                    
-                    if(meta.is_fin == 0x01){
-                        cookie_head = stack_head_push.execute(0);
-                        cookie_stack = stack_push_write.execute(((bit<32>)cookie_head));
+                        // extract the cookie from the server 16 LSBs timestamp (ie, tsecr.lsb)
+                        cookie_stack = hdr.timestamp.tsecr_lsb;
+                        
+                        // TODO: drop if the connection hash is wrong
+
+                        @stage(8) { 
+                            // write the 16 LSBs of the client timestamp (ie, tsval.msb) into the client register
+                            conn_table_client_ts_write_action.execute(cookie_stack);
+                        }
+                        @stage(9) {
+                            // restore the server 16 LSBs of the timestamp
+                            hdr.timestamp.tsecr_lsb = conn_table_server_ts_read_action.execute(cookie_stack);   
+                        }
+                        @stage(10) {
+                            // read the server assigned to this connection
+                            server_id = conn_table_read_action.execute(cookie_stack);
+                        }
+                        // update the 16 LSBs of the client timestamp with the cookie
+                        hdr.timestamp.tsval_lsb = (bit<16>)cookie_stack;
+
+                        //send the packet to the server associated with the cookie
+                        select_all_server.apply();
+
                     }
-                
-                    //send the packet to the server associated with the "decrypted" cookie
-                    select_all_server.apply();
-                    
-               
+                    else{
+
+                        // extract the table size from the first register
+                        table_size = (bit<16>)table_size_reg_read_action.execute(0);
+
+                        // extract the next id the server table where the syn to should sent
+                        server_id = (bit<16>)test_reg_action.execute(0);
+
+                        // get an unused cookie
+                        @stage(4) { 
+                            // get the pointer to the stack
+                            cookie_head = stack_head_pop.execute(0);
+                        }
+                        @stage(6) { 
+                            // get a cookie
+                            cookie_stack = stack_pop_read.execute(cookie_head);
+                        }
+
+                        @stage(8) { 
+                            // store the 16 LSBs of the client timestamp (ie, tsval) into the register at the "cookie" index
+                            conn_table_client_ts_write_action.execute(cookie_stack);   
+                        }
+                        @stage(10) {
+                            // store the selected server in the register at the "cookie" index
+                            conn_table_write_action.execute(cookie_stack);
+                        }
+
+                        // sto the cookie into the 16 LSBs of the client timestamp (ie, tsval)
+                        hdr.timestamp.tsval_lsb = cookie_stack;
+
+                        // map the packet to the server pointed by the server_id
+                        select_all_server.apply();
+
+                    }
+                }else{
+                    // packet from the server
+                    get_server_from_ip.apply();
+
+                    // extract the "cookie" from the 16 LSBs of the client timestamp (ie, tsecr) 
+                    cookie_stack = hdr.timestamp.tsecr_lsb; // 0x0009
+
+                    /* FIN to be realized in coordination with the server
+                    if(meta.is_fin == 0x01){ //currently not supported
+                        @stage(4) { 
+                            cookie_head = stack_head_push.execute(0);
+                        }
+                        @stage(6) { 
+                            cookie_stack = stack_push_write.execute(((bit<32>)cookie_head));
+                        }
+                    }*/
+
+                    @stage(8) { 
+                        // restore the 16 LSBs of the client timestamp by reading the register at the "cookie" index
+                        hdr.timestamp.tsecr_lsb = conn_table_client_ts_read_action.execute(cookie_stack); //abab
+                    }
+                    @stage(9) {
+                        // write the 16 LSBs of the server timestamp into the register at the "cookie" index index
+                        conn_table_server_ts_write_action.execute(cookie_stack);//cookie_stack_32); // writes ca82
+                    }
+
+                    // rewrite the 16 LSBs of the server timestamp with the cookie
+                    hdr.timestamp.tsval_lsb = cookie_stack;
                 }
-                else{
-                    // extract the table size from the first register
-                    table_size = (bit<16>)table_size_reg_read_action.execute(0);
-
-                    // extract the next id the server table where the syn to should sent
-                    next = (bit<16>)test_reg_action.execute(0);
-               
-                    // get an unused cookie
-                    cookie_head_32 = ((bit<32>)stack_head_pop.execute(0));
-                    cookie_stack_32 = ((bit<32>)stack_pop_read.execute(cookie_head_32));
-
-                    // update the connection hash table
-                    conn_table_hash_write_action.execute(cookie_stack_32);
-
-                    // update the connection table
-                    conn_table_write_action.execute(cookie_stack_32);
-
-                    // update the fir 16MSBs of the timestamp ecr
-                    hdr.timestamp.tsecr_cookie = (bit<16>)cookie_stack_32; 
-
-                    // map the packet to a server and get the server_id
-                    // select_active_server.apply();
-
-                }
-            }else{
-                // packet from the server
-            }
-          } 
+            } 
         }
     }
 }
@@ -478,10 +508,11 @@ control IngressDeparser(packet_out pkt,
 {
     Checksum() ipv4_checksum;
     Checksum() tcp_checksum;
-    
+
     apply {
-        
+
         if(hdr.ipv4.isValid()){
+            // update the IPv4 checksum
             hdr.ipv4.hdr_checksum = ipv4_checksum.update({
                 hdr.ipv4.version,
                 hdr.ipv4.ihl,
@@ -496,15 +527,17 @@ control IngressDeparser(packet_out pkt,
                 hdr.ipv4.dst_addr
             });
         }
+
         if(hdr.tcp.isValid()){
+            // update the TCP checksum
             hdr.tcp.checksum = tcp_checksum.update({
-                    hdr.ipv4.src_addr,
-                    hdr.ipv4.dst_addr,
-                    hdr.timestamp.tsecr_msb,
-                    hdr.timestamp.tsecr_lsb,
-                    hdr.timestamp.tsval_msb,
-                    hdr.timestamp.tsval_lsb,
-                    meta.checksum
+                hdr.ipv4.src_addr,
+                hdr.ipv4.dst_addr,
+                hdr.timestamp.tsecr_msb,
+                hdr.timestamp.tsecr_lsb,
+                hdr.timestamp.tsval_msb,
+                hdr.timestamp.tsval_lsb,
+                meta.checksum
             });
         }
         pkt.emit(hdr);
@@ -581,6 +614,6 @@ Pipeline(
     EgressParser(),
     Egress(),
     EgressDeparser()
-) pipe;
+    ) pipe;
 
 Switch(pipe) main;

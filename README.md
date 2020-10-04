@@ -1,4 +1,4 @@
-# Stateless Cheetah with TCP timestamps: P4-Tofino code
+# Stateless and Stateful Cheetah with TCP timestamps: P4-Tofino code
 
 We implemented Stateless and Stateful Cheetah in P4 on the Tofino to load balancer TCP connections by storing the Cheetah cookie in the TCP timestamp option.
 
@@ -80,3 +80,8 @@ This will generate a request towards the `VIP` and will be served by Server-1. C
 Run again the same command at the client. The request will now be served by Server-2. Check on `tcpdump`
 
 This cycle repeats for each request sent by a client.
+
+
+## Functionalities not yet implemented
+* check whether the has of the incoming packet correspond to the stored one.
+* handle the FINs from the server.
