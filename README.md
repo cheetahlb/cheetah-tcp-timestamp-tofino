@@ -41,6 +41,8 @@ where `$CHEETAH_LAB` is the directory where you plan to store the tofino-related
 
 ### Build the program
 
+We tested the code on a `Tofino Edgecore Wedges 100 BF-32X` running `BF Studio 9.2.0` on top of `Linux 4.14.151-OpenNetworkLinux`.
+
 `$SDE/p4_build.sh $CHEETAH_LAB/p4src/stateless_cheetah.p4` or
 `$SDE/p4_build.sh $CHEETAH_LAB/p4src/stateful_cheetah.p4`
 
