@@ -1,6 +1,7 @@
 # Cheetah with TCP timestamps: P4-Tofino code
 
-We implemented Stateless and Stateful Cheetah in P4 on the Tofino to load balancer TCP connections by storing the Cheetah cookie in the TCP timestamp option.
+We implemented [Stateless and Stateful Cheetah](https://www.usenix.org/conference/nsdi20/presentation/barbette) in P4 on the Tofino to load balancer TCP connections by storing the Cheetah cookie in the TCP timestamp option.
+The QUIC version is available [here](https://github.com/cheetahlb/cheetah-quic-tofino).
 
 ## Code organization
 
