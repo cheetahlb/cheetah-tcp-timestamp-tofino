@@ -47,7 +47,7 @@ We tested the code on a `Tofino Edgecore Wedges 100 BF-32X` running `BF Studio 9
 `$SDE/p4_build.sh $CHEETAH_LAB/p4src/stateless_cheetah.p4` or
 `$SDE/p4_build.sh $CHEETAH_LAB/p4src/stateful_cheetah.p4`
 
-We also have an optimized version of the stateful load balancer (in `p4src/stateful_cheetah_optimized.p4`) that requires two additional flags to compile: -DUSE_STAGE and -DCASE_FIX (or you can change #ifdefs on top of the program).
+We also have an optimized version of the stateful load balancer (in `p4src/stateful_cheetah_optimized_only_client.p4`) that requires two additional flags to compile: -DUSE_STAGE and -DCASE_FIX (or you can change #ifdefs on top of the program). This version only handles packets from the client and assumes Direct Server Return is implemented on the servers. 
 
 ### Run the program
 
