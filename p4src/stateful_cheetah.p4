@@ -5,6 +5,31 @@
 #include <core.p4>
 #include <tna.p4>
 
+#ifdef USE_STAGE
+#define STAGE(n) @stage(n)
+#else
+#define STAGE(n)
+#endif
+
+#ifdef CASE_FIX
+#define TABLE_SIZE_REG_STAGE        2
+#define TEST_REG_STAGE              3
+#define STACK_HEAD_STAGE            2
+#define COOKIE_STACK_REG_STAGE      3
+#define CONN_TABLE_HASH_STAGE       4
+#define CONN_TABLE_CLIENT_TS_STAGE  5
+#define CONN_TABLE_SERVER_TS_STAGE  5
+#define CONN_TABLE_STAGE            6
+#else
+#define TABLE_SIZE_REG_STAGE        2
+#define TEST_REG_STAGE              3
+#define STACK_HEAD_STAGE            4
+#define COOKIE_STACK_REG_STAGE      6
+#define CONN_TABLE_HASH_STAGE       7
+#define CONN_TABLE_CLIENT_TS_STAGE  8
+#define CONN_TABLE_SERVER_TS_STAGE  9
+#define CONN_TABLE_STAGE           10
+#endif
 /*************************************************************************
  ************* C O N S T A N T S    A N D   T Y P E S  *******************
 **************************************************************************/
@@ -171,8 +196,8 @@ parser IngressParser(packet_in        pkt,
 
         transition select(hdr.tcp.data_offset) {
             ( 5 )  : parse_first_fragment;
-            ( 8 ) : parse_nop;
-            ( 10  ) : parse_mss_sack;
+            ( 8 )  : parse_nop;
+            ( 10 ) : parse_mss_sack;
             default : accept;
         }
     }
@@ -407,63 +432,77 @@ control Ingress(
                         cookie_stack = hdr.timestamp.tsecr_lsb;
                         
                         // TODO: drop if the connection hash is wrong
-                        @stage(7){
+                        STAGE(CONN_TABLE_HASH_STAGE)
+                        {
                             sel_hash_2 = conn_table_hash_read_action.execute(cookie_stack);
                         }
+                        
                         if(sel_hash_2 != sel_hash){
                             drop();
-                        }else{
+                        } else {
 
-                        @stage(8) { 
-                            // write the 16 LSBs of the client timestamp (ie, tsval.msb) into the client register
-                            conn_table_client_ts_write_action.execute(cookie_stack);
+                            STAGE(CONN_TABLE_CLIENT_TS_STAGE)
+                            { 
+                                // write the 16 LSBs of the client timestamp (ie, tsval.msb) into the client register
+                                conn_table_client_ts_write_action.execute(cookie_stack);
+                            }
+                            
+                            STAGE(CONN_TABLE_SERVER_TS_STAGE)
+                            {
+                                // restore the server 16 LSBs of the timestamp
+                                hdr.timestamp.tsecr_lsb = conn_table_server_ts_read_action.execute(cookie_stack);   
+                            }
+                            
+                            STAGE(CONN_TABLE_STAGE)
+                            {
+                                // read the server assigned to this connection
+                                server_id = conn_table_read_action.execute(cookie_stack);
+                            }
+                            
+                            // update the 16 LSBs of the client timestamp with the cookie
+                            hdr.timestamp.tsval_lsb = (bit<16>)cookie_stack;
+                            
+                            //send the packet to the server associated with the cookie
+                            select_all_server.apply();
                         }
-                        @stage(9) {
-                            // restore the server 16 LSBs of the timestamp
-                            hdr.timestamp.tsecr_lsb = conn_table_server_ts_read_action.execute(cookie_stack);   
+                        
+                    } else {
+                        STAGE(TABLE_SIZE_REG_STAGE)
+                        {
+                            // extract the table size from the first register
+                            table_size = (bit<16>)table_size_reg_read_action.execute(0);
                         }
-                        @stage(10) {
-                            // read the server assigned to this connection
-                            server_id = conn_table_read_action.execute(cookie_stack);
+                        
+                        STAGE(TEST_REG_STAGE)
+                        {
+                            // extract the next id the server table where the syn to should sent
+                            server_id = (bit<16>)test_reg_action.execute(0);
                         }
-                        // update the 16 LSBs of the client timestamp with the cookie
-                        hdr.timestamp.tsval_lsb = (bit<16>)cookie_stack;
-
-                        //send the packet to the server associated with the cookie
-                        select_all_server.apply();
-                    }
-
-                    }
-                    else{
-
-                        // extract the table size from the first register
-                        table_size = (bit<16>)table_size_reg_read_action.execute(0);
-
-                        // extract the next id the server table where the syn to should sent
-                        server_id = (bit<16>)test_reg_action.execute(0);
-
+                        
                         // get an unused cookie
-                        @stage(4) { 
+                        STAGE(STACK_HEAD_STAGE)
+                        { 
                             // get the pointer to the stack
                             cookie_head = stack_head_pop.execute(0);
                         }
-                        @stage(6) { 
+                        
+                        STAGE(COOKIE_STACK_REG_STAGE) { 
                             // get a cookie
                             cookie_stack = stack_pop_read.execute(cookie_head);
                         }
 
-                        @stage(7){
+                        STAGE(CONN_TABLE_HASH_STAGE){
                             conn_table_hash_write_action.execute(cookie_stack);
                         }
 
-                        @stage(8) { 
+                        STAGE(CONN_TABLE_CLIENT_TS_STAGE) { 
                             // store the 16 LSBs of the client timestamp (ie, tsval) into the register at the "cookie" index
                             conn_table_client_ts_write_action.execute(cookie_stack);   
                         }
-                        @stage(10) {
+                        
+                        STAGE(CONN_TABLE_STAGE) {
                             // store the selected server in the register at the "cookie" index
-                            conn_table_write_action.execute(cookie_stack);
-                            
+                            conn_table_write_action.execute(cookie_stack);                            
                         }
 
                         // sto the cookie into the 16 LSBs of the client timestamp (ie, tsval)
@@ -473,7 +512,7 @@ control Ingress(
                         select_all_server.apply();
 
                     }
-                }else{
+                } else {
                     // packet from the server
                     get_server_from_ip.apply();
 
@@ -482,19 +521,25 @@ control Ingress(
 
                     /* FIN to be realized in coordination with the server*/
                     if(meta.is_fin == 0x01){ //currently not supported
-                        @stage(4) { 
+                        STAGE(STACK_HEAD_STAGE)
+                        { 
                             cookie_head = stack_head_push.execute(0);
                         }
-                        @stage(6) { 
+                       
+                        STAGE(COOKIE_STACK_REG_STAGE)
+                        { 
                             cookie_stack = stack_push_write.execute(((bit<32>)cookie_head));
                         }
                     }
 
-                    @stage(8) { 
+                    STAGE(CONN_TABLE_CLIENT_TS_STAGE)
+                    { 
                         // restore the 16 LSBs of the client timestamp by reading the register at the "cookie" index
                         hdr.timestamp.tsecr_lsb = conn_table_client_ts_read_action.execute(cookie_stack); //abab
                     }
-                    @stage(9) {
+                    
+                    STAGE(CONN_TABLE_SERVER_TS_STAGE)
+                    {
                         // write the 16 LSBs of the server timestamp into the register at the "cookie" index index
                         conn_table_server_ts_write_action.execute(cookie_stack);//cookie_stack_32); // writes ca82
                     }
