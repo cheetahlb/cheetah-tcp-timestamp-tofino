@@ -12,13 +12,15 @@
 #endif
 
 #ifdef CASE_FIX
+#define FIN_STATE_REG_STAGE         2
 #define TABLE_SIZE_REG_STAGE        2
 #define TEST_REG_STAGE              3
 #define STACK_HEAD_STAGE            2
-#define COOKIE_STACK_REG_STAGE      3
-#define CONN_TABLE_HASH_STAGE       4
-#define CONN_TABLE_STAGE            5
+#define COOKIE_STACK_REG_STAGE      4
+#define CONN_TABLE_HASH_STAGE       5
+#define CONN_TABLE_STAGE            6
 #else
+#define FIN_STATE_REG_STAGE         2
 #define TABLE_SIZE_REG_STAGE        2
 #define TEST_REG_STAGE              3
 #define STACK_HEAD_STAGE            4
@@ -126,6 +128,7 @@ struct my_ingress_metadata_t {
     bit<16>       checksum;
     bit<1>        is_fin;
     bit<1>        is_syn;
+    bit<1>        is_ack;
     bit<32>     timestamp;
 }
 
@@ -153,7 +156,8 @@ parser IngressParser(packet_in        pkt,
         meta.ipv4_checksum_err = 0;
         meta.checksum = 0;   
         meta.is_fin = 0;   
-        meta.is_syn = 0;  
+        meta.is_syn = 0; 
+        meta.is_ack = 0; 
         meta.timestamp=0; 
         transition parse_ethernet;
     }
@@ -189,6 +193,7 @@ parser IngressParser(packet_in        pkt,
         
         meta.is_fin = (bit<1>)hdr.tcp.flags;
         meta.is_syn = (bit<1>)(hdr.tcp.flags >> 1);
+        meta.is_ack = (bit<1>)(hdr.tcp.flags >> 4);
 
         transition select(hdr.tcp.data_offset) {
             ( 5 )  : parse_first_fragment;
@@ -251,6 +256,7 @@ control Ingress(
     bit<16> table_size=0;
     bit<16> cookie_stack;
     bit<16> cookie_head;
+    bit<16> fin_state=0;
     bit<16> server_id =0;
     //bit<32> temp;
     bit<32> vip = 0xc0a84001;
@@ -286,6 +292,23 @@ control Ingress(
     RegisterAction<bit<16>, bit<16>, bit<16>>(cookie_stack_reg) stack_push_write = {
         void apply(inout bit<16> value, out bit<16> read_value){
             value = hdr.timestamp.tsecr_lsb;
+            read_value = value;
+        }
+    };
+    Register<bit<16>, bit<16>>(32w10) cookie_fin_reg;
+    RegisterAction<bit<16>, bit<16>, bit<16>>(cookie_fin_reg) push_write_client_fin = {
+        void apply(inout bit<16> value, out bit<16> read_value){
+            if(value < 0x0002){
+                value = value + 0x2;
+            } 
+            read_value = value;
+        }
+    };
+    RegisterAction<bit<16>, bit<16>, bit<16>>(cookie_fin_reg) push_write_server_fin = {
+        void apply(inout bit<16> value, out bit<16> read_value){
+            if(value[0:0] < 0x1){
+                value = value + 0x1;
+            } 
             read_value = value;
         }
     };
@@ -374,110 +397,149 @@ control Ingress(
     apply {
         if (hdr.ipv4.isValid()) {
             if(hdr.tcp.isValid()){
+
+                if(hdr.ipv4.dst_addr != vip){
+
+                    if(meta.is_fin == 1){
+                        cookie_stack = hdr.timestamp.tsval_lsb;
+
+                        STAGE(FIN_STATE_REG_STAGE) { 
+                            // push the cookie
+                            //stack_push_write.execute(cookie_head);
+                            fin_state = push_write_server_fin.execute(cookie_stack);
+                        }
+                        if(fin_state == 3){
+                            STAGE(STACK_HEAD_STAGE)
+                            { 
+                                // get the pointer to the head of stack + 1
+                                cookie_head = stack_head_push.execute(0);
+                            }
+
+                            STAGE(COOKIE_STACK_REG_STAGE) { 
+                                // push the cookie
+                                stack_push_write.execute(cookie_head);
+                            }
+                        }
+                    }
+                }else{
                 // prepare the input to the hash function assuming the packets comes from the client
-                bit<32> ip_1 = hdr.ipv4.src_addr;
-                bit<16> tcp_1 = hdr.tcp.src_port;
-                bit<16> tcp_2 = hdr.tcp.dst_port;
+                    bit<32> ip_1 = hdr.ipv4.src_addr;
+                    bit<16> tcp_1 = hdr.tcp.src_port;
+                    bit<16> tcp_2 = hdr.tcp.dst_port;
 
                 // compute the hash of the connection identifier. Currently not stored
-                calc_ipv4_hash.apply(ip_1,tcp_1,tcp_2,hdr.ipv4.protocol,sel_hash);
+                    calc_ipv4_hash.apply(ip_1,tcp_1,tcp_2,hdr.ipv4.protocol,sel_hash);
 
-                
+
                 //it is an incoming packet from a client
 
-                if(meta.is_fin == 1){
+                    if(meta.is_fin == 1){
 
                     // extract the cookie from the server 16 LSBs timestamp (ie, tsecr.lsb)
-                    cookie_stack = hdr.timestamp.tsecr_lsb;
+                        cookie_stack = hdr.timestamp.tsecr_lsb;
 
-                    // we can free up an entry from the connection table
-                    STAGE(STACK_HEAD_STAGE)
-                    { 
-                        // get the pointer to the head of stack + 1
-                        cookie_head = stack_head_push.execute(0);
-                    }
-                          
-                    STAGE(COOKIE_STACK_REG_STAGE) { 
+                        STAGE(FIN_STATE_REG_STAGE) { 
                         // push the cookie
-                        stack_push_write.execute(cookie_head);
-                    }
+                        //stack_push_write.execute(cookie_head);
+                            push_write_client_fin.execute(cookie_stack);
+                        }
 
-                    STAGE(CONN_TABLE_STAGE)
-                    {
-                        // read the server assigned to this connection
-                        server_id = conn_table_read_action.execute(cookie_stack);
-                    }
-                            
-                    //send the packet to the server associated with the cookie
-                    select_all_server.apply();
+                        if(fin_state == 3){
+                            STAGE(STACK_HEAD_STAGE)
+                            { 
+                                // get the pointer to the head of stack + 1
+                                cookie_head = stack_head_push.execute(0);
+                            }
 
-                }else if(meta.is_syn == 0){
-                    //if it is a packet belonging to a connection
-
-                    // extract the cookie from the server 16 LSBs timestamp (ie, tsecr.lsb)
-                    cookie_stack = hdr.timestamp.tsecr_lsb;
-                        
-                    STAGE(CONN_TABLE_HASH_STAGE)
-                    {
-                        sel_hash_2 = conn_table_hash_read_action.execute(cookie_stack);
-                    }
-                        
-                    if(sel_hash_2 != sel_hash){
-                        drop();
-                    } else {
+                            STAGE(COOKIE_STACK_REG_STAGE) { 
+                                // push the cookie
+                                stack_push_write.execute(cookie_head);
+                            }
+                        }
 
                         STAGE(CONN_TABLE_STAGE)
                         {
-                            // read the server assigned to this connection
+                        // read the server assigned to this connection
                             server_id = conn_table_read_action.execute(cookie_stack);
                         }
+
+                    //send the packet to the server associated with the cookie
+                        select_all_server.apply();
+
+                    }else if(meta.is_syn == 0){
+                    //if it is a packet belonging to a connection
+
+                    // extract the cookie from the server 16 LSBs timestamp (ie, tsecr.lsb)
+                        cookie_stack = hdr.timestamp.tsecr_lsb;
+                        
+                        STAGE(COOKIE_STACK_REG_STAGE) { 
+                            stack_push_write.execute(cookie_stack);
+                        }
+
+                        STAGE(CONN_TABLE_HASH_STAGE)
+                        {
+                            sel_hash_2 = conn_table_hash_read_action.execute(cookie_stack);
+                        }
+                        
+
+                        if(sel_hash_2 != sel_hash){
+                            drop();
+                        } else {
+
+                            STAGE(CONN_TABLE_STAGE)
+                            {
+                            // read the server assigned to this connection
+                                server_id = conn_table_read_action.execute(cookie_stack);
+                            }
                             
                         //send the packet to the server associated with the cookie
-                        select_all_server.apply();
-                    }
+                            select_all_server.apply();
+                        }
                         
-                } else {
-                    STAGE(TABLE_SIZE_REG_STAGE)
-                    {
+                    } else {
+                        sel_hash = sel_hash & 0x3fff;
+                        STAGE(TABLE_SIZE_REG_STAGE)
+                        {
                         // extract the table size from the first register
-                        table_size = (bit<16>)table_size_reg_read_action.execute(0);
-                    }
+                            table_size = (bit<16>)table_size_reg_read_action.execute(0);
+                        }
                         
-                    STAGE(TEST_REG_STAGE)
-                    {
+                        STAGE(TEST_REG_STAGE)
+                        {
                         // extract the next id the server table where the syn to should sent
-                        server_id = (bit<16>)test_reg_action.execute(0);
-                    }
+                            server_id = (bit<16>)test_reg_action.execute(0);
+                        }
                         
                     // get an unused cookie
-                    STAGE(STACK_HEAD_STAGE)
-                    { 
+                        STAGE(STACK_HEAD_STAGE)
+                        { 
                         // get the pointer to the stack
-                        cookie_head = stack_head_pop.execute(0);
-                    }
+                            cookie_head = stack_head_pop.execute(0);
+                        }
                         
-                    STAGE(COOKIE_STACK_REG_STAGE) { 
+                        STAGE(COOKIE_STACK_REG_STAGE) { 
                         // get a cookie
-                        cookie_stack = stack_pop_read.execute(cookie_head);
-                    }
+                            cookie_stack = stack_pop_read.execute(cookie_head);
+                        }
 
-                    STAGE(CONN_TABLE_HASH_STAGE){
-                        conn_table_hash_write_action.execute(cookie_stack);
-                    }
+                        STAGE(CONN_TABLE_HASH_STAGE){
+                            conn_table_hash_write_action.execute(cookie_stack);
+                        }
                         
-                    STAGE(CONN_TABLE_STAGE) {
+                        STAGE(CONN_TABLE_STAGE) {
                         // store the selected server in the register at the "cookie" index
-                        conn_table_write_action.execute(cookie_stack);                            
-                    }
+                            conn_table_write_action.execute(cookie_stack);                            
+                        }
 
                     // sto the cookie into the 16 LSBs of the client timestamp (ie, tsval)
-                    hdr.timestamp.tsval_lsb = cookie_stack;
+                        hdr.timestamp.tsval_lsb = cookie_stack;
 
                     // map the packet to the server pointed by the server_id
-                    select_all_server.apply();
+                        select_all_server.apply();
 
-                }
-            } 
+                    }
+                } 
+            }
         }
     }
 }
