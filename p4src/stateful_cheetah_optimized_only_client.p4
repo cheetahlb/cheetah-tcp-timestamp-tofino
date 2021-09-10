@@ -414,8 +414,7 @@ control Ingress(
                 if(hdr.ipv4.dst_addr != vip){
 
                     if(meta.is_fin == 1){
-                        //cookie_stack = hdr.timestamp.tsval_lsb;
-                        cookie_stack = 3;
+                        cookie_stack = hdr.timestamp.tsval_lsb;
                         STAGE(FIN_STATE_REG_STAGE) { 
                             // push the cookie
                             //stack_push_write.execute(cookie_head);
@@ -449,8 +448,7 @@ control Ingress(
                     if(meta.is_fin == 1){
 
                     // extract the cookie from the server 16 LSBs timestamp (ie, tsecr.lsb)
-                        //cookie_stack = hdr.timestamp.tsecr_lsb;
-                        cookie_stack = 3;
+                        cookie_stack = hdr.timestamp.tsecr_lsb;
                         STAGE(FIN_STATE_REG_STAGE) { 
                         // push the cookie
                         //stack_push_write.execute(cookie_head);
@@ -483,8 +481,7 @@ control Ingress(
                     //if it is a packet belonging to a connection
 
                     // extract the cookie from the server 16 LSBs timestamp (ie, tsecr.lsb)
-                        //cookie_stack = hdr.timestamp.tsecr_lsb;
-                        cookie_stack = 3;
+                        cookie_stack = hdr.timestamp.tsecr_lsb;
                         STAGE(COOKIE_STACK_REG_STAGE) { 
                             stack_push_write.execute(cookie_stack);
                         }
@@ -531,8 +528,7 @@ control Ingress(
                         
                         STAGE(COOKIE_STACK_REG_STAGE) { 
                         // get a cookie
-                            //cookie_stack = stack_pop_read.execute(cookie_head);
-                            cookie_stack = 3;
+                            cookie_stack = stack_pop_read.execute(cookie_head);
                         }
 
                         STAGE(CONN_TABLE_HASH_STAGE){
