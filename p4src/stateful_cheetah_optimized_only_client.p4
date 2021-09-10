@@ -298,17 +298,30 @@ control Ingress(
     Register<bit<16>, bit<16>>(32w10) cookie_fin_reg;
     RegisterAction<bit<16>, bit<16>, bit<16>>(cookie_fin_reg) push_write_client_fin = {
         void apply(inout bit<16> value, out bit<16> read_value){
-            if(value < 0x0002){
-                value = value + 0x2;
+            if(value == 0x0001){
+                read_value = 3;
+                value=0;
+            }else{
+                value=2;
             } 
-            read_value = value;
+            
+            
         }
     };
     RegisterAction<bit<16>, bit<16>, bit<16>>(cookie_fin_reg) push_write_server_fin = {
         void apply(inout bit<16> value, out bit<16> read_value){
-            if(value[0:0] < 0x1){
-                value = value + 0x1;
-            } 
+            if(value == 0x0002){
+                read_value = 3;
+                value=0;
+            }else{
+                value=1;
+            }
+            
+        }
+    };
+    RegisterAction<bit<16>, bit<16>, bit<16>>(cookie_fin_reg) reset_fin = {
+        void apply(inout bit<16> value, out bit<16> read_value){
+            value=0;
             read_value = value;
         }
     };
@@ -401,8 +414,8 @@ control Ingress(
                 if(hdr.ipv4.dst_addr != vip){
 
                     if(meta.is_fin == 1){
-                        cookie_stack = hdr.timestamp.tsval_lsb;
-
+                        //cookie_stack = hdr.timestamp.tsval_lsb;
+                        cookie_stack = 3;
                         STAGE(FIN_STATE_REG_STAGE) { 
                             // push the cookie
                             //stack_push_write.execute(cookie_head);
@@ -436,12 +449,12 @@ control Ingress(
                     if(meta.is_fin == 1){
 
                     // extract the cookie from the server 16 LSBs timestamp (ie, tsecr.lsb)
-                        cookie_stack = hdr.timestamp.tsecr_lsb;
-
+                        //cookie_stack = hdr.timestamp.tsecr_lsb;
+                        cookie_stack = 3;
                         STAGE(FIN_STATE_REG_STAGE) { 
                         // push the cookie
                         //stack_push_write.execute(cookie_head);
-                            push_write_client_fin.execute(cookie_stack);
+                            fin_state = push_write_client_fin.execute(cookie_stack);
                         }
 
                         if(fin_state == 3){
@@ -470,8 +483,8 @@ control Ingress(
                     //if it is a packet belonging to a connection
 
                     // extract the cookie from the server 16 LSBs timestamp (ie, tsecr.lsb)
-                        cookie_stack = hdr.timestamp.tsecr_lsb;
-                        
+                        //cookie_stack = hdr.timestamp.tsecr_lsb;
+                        cookie_stack = 3;
                         STAGE(COOKIE_STACK_REG_STAGE) { 
                             stack_push_write.execute(cookie_stack);
                         }
@@ -497,7 +510,6 @@ control Ingress(
                         }
                         
                     } else {
-                        sel_hash = sel_hash & 0x3fff;
                         STAGE(TABLE_SIZE_REG_STAGE)
                         {
                         // extract the table size from the first register
@@ -519,7 +531,8 @@ control Ingress(
                         
                         STAGE(COOKIE_STACK_REG_STAGE) { 
                         // get a cookie
-                            cookie_stack = stack_pop_read.execute(cookie_head);
+                            //cookie_stack = stack_pop_read.execute(cookie_head);
+                            cookie_stack = 3;
                         }
 
                         STAGE(CONN_TABLE_HASH_STAGE){
