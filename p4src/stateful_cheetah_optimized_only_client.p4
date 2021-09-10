@@ -411,39 +411,17 @@ control Ingress(
         if (hdr.ipv4.isValid()) {
             if(hdr.tcp.isValid()){
 
-                if(hdr.ipv4.dst_addr != vip){
-
-                    if(meta.is_fin == 1){
-                        cookie_stack = hdr.timestamp.tsval_lsb;
-                        STAGE(FIN_STATE_REG_STAGE) { 
-                            // push the cookie
-                            //stack_push_write.execute(cookie_head);
-                            fin_state = push_write_server_fin.execute(cookie_stack);
-                        }
-                        if(fin_state == 3){
-                            STAGE(STACK_HEAD_STAGE)
-                            { 
-                                // get the pointer to the head of stack + 1
-                                cookie_head = stack_head_push.execute(0);
-                            }
-
-                            STAGE(COOKIE_STACK_REG_STAGE) { 
-                                // push the cookie
-                                stack_push_write.execute(cookie_head);
-                            }
-                        }
-                    }
-                }else{
-                // prepare the input to the hash function assuming the packets comes from the client
+                if(hdr.ipv4.dst_addr == vip){
+                    // prepare the input to the hash function assuming the packets comes from the client
                     bit<32> ip_1 = hdr.ipv4.src_addr;
                     bit<16> tcp_1 = hdr.tcp.src_port;
                     bit<16> tcp_2 = hdr.tcp.dst_port;
 
-                // compute the hash of the connection identifier. Currently not stored
+                    // compute the hash of the connection identifier. Currently not stored
                     calc_ipv4_hash.apply(ip_1,tcp_1,tcp_2,hdr.ipv4.protocol,sel_hash);
 
 
-                //it is an incoming packet from a client
+                    //it is an incoming packet from a client
 
                     if(meta.is_fin == 1){
 
@@ -546,6 +524,27 @@ control Ingress(
                     // map the packet to the server pointed by the server_id
                         select_all_server.apply();
 
+                    }
+                }else{
+                    if(meta.is_fin == 1){
+                        cookie_stack = hdr.timestamp.tsval_lsb;
+                        STAGE(FIN_STATE_REG_STAGE) { 
+                            // push the cookie
+                            //stack_push_write.execute(cookie_head);
+                            fin_state = push_write_server_fin.execute(cookie_stack);
+                        }
+                        if(fin_state == 3){
+                            STAGE(STACK_HEAD_STAGE)
+                            { 
+                                // get the pointer to the head of stack + 1
+                                cookie_head = stack_head_push.execute(0);
+                            }
+
+                            STAGE(COOKIE_STACK_REG_STAGE) { 
+                                // push the cookie
+                                stack_push_write.execute(cookie_head);
+                            }
+                        }
                     }
                 } 
             }
